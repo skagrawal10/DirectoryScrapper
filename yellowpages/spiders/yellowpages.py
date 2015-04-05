@@ -15,29 +15,62 @@ import signal
 import math
 import sys
 from middlewares import *
+import cStringIO
+import codecs
+
+
+class UnicodeWriter:
+	"""
+	A CSV writer which will write rows to CSV file "f",
+	which is encoded in the given encoding.
+	"""
+	def __init__(self, f, dialect=csv.excel, encoding="utf-8", **kwds):
+		# Redirect output to a queue
+		self.queue = cStringIO.StringIO()
+		self.writer = csv.writer(self.queue, dialect=dialect, **kwds)
+		self.stream = f
+		self.encoder = codecs.getincrementalencoder(encoding)()		
+
+	def writerow(self, row):
+		try:
+			self.writer.writerow([unicode(s).encode("utf-8") for s in row])
+			# Fetch UTF-8 output from the queue ...
+			data = self.queue.getvalue()
+			data = data.decode("utf-8")
+			# ... and reencode it into the target encoding
+			data = self.encoder.encode(data)
+			# write to the target stream
+			self.stream.write(data)
+			# empty queue
+			self.queue.truncate(0)
+		except:
+			pass
+
+	def writerows(self, rows):
+		for row in rows:
+			self.writerow(row)
 
 class yellowpagesSpider(BaseSpider):
 	
 	name='yellowpages'
-	start_urls = ['http://www.yellowpages.com/search?search_terms=Plumber&geo_location_terms=New+York%2C+NY']
+	#start_urls = ['http://www.yellowpages.com/search?search_terms=Plumber&geo_location_terms=New+York%2C+NY']
 	download_delay = 2
 	
 	def __init__(self, name=None, **kwargs): 
 		self.projectName='yellowpages'
-		self.baseURL = 'http://www.yellowpages.com/'
+		self.baseURL = 'http://www.yellowpages.com'
 		log=[]
 	
-		MAX_download_delay = 10
-		print 'Yellowpages Spider Started!!!'
-
-		file_name = "yellow.csv" ; #kwargs['file_name']
+		self.download_delay = 10;
+		self.start_urls = [kwargs["url"]];
+		file_name = kwargs['file_name']
 		file = open(file_name, 'ab')
-		self.writer = csv.writer(file)
+		self.writer = UnicodeWriter(file)
 		
 		self.writer.writerow(['Source_URL','Name','Phone_Number','Street','City','State','ZIP','Website'])
 		
 		
-	def parse(self, response):
+	def parse1(self, response):
 		if str(response.status) == '403':
 			raise CloseSpider('proxy blocked')
 			sys.exit(0)
@@ -68,12 +101,12 @@ class yellowpagesSpider(BaseSpider):
 			print page_url;
 			reqs.append(req)
 			page_no += 1
-			if page_no>2:
-				break;
+			#if page_no>2:
+			#	break;
 		return reqs
 
 		
-	def getList(self, response):
+	def parse(self, response):
 		if str(response.status) == '403':
 			raise CloseSpider('proxy blocked')
 			sys.exit(0)
@@ -82,6 +115,17 @@ class yellowpagesSpider(BaseSpider):
 		res_text = response.body_as_unicode().encode('ascii', 'ignore') 			
 		data = res_text.replace('\n', ' ').replace('\r', ' ').replace('&amp;', '&').replace('\t', '')
 		hxs = HtmlXPathSelector(response)
+		reqs = [];
+		next_page_link = None;
+		try:
+			next_page_link = self.baseURL +	hxs.select('//a[@class="next ajax-page"]//@href')[0].extract();
+			print "Next Page URL - " + next_page_link;
+			nnext_page_link = next_page_link.replace("#", "&").replace("refinements=facet_clicked%3A", "");
+			req = Request(url=next_page_link, priority=2, callback=self.parse)
+			reqs.append(req);
+		except:
+			pass;
+		
 		
 		items = hxs.select('//div[@class="search-results organic"]//div[@class="v-card"]')
 		for item in items:
@@ -129,7 +173,7 @@ class yellowpagesSpider(BaseSpider):
 			info = [url,name,phone_no,street_addr,locality,region,postal,website]
 			self.writer.writerow(info)
 			
-		return
+		return reqs	
 		
 	
 	def handler(self, signum, frame):

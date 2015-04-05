@@ -15,30 +15,68 @@ import signal
 import math
 import sys
 from middlewares import *
+import cStringIO
+import codecs
+
+
+
+class UnicodeWriter:
+	"""
+	A CSV writer which will write rows to CSV file "f",
+	which is encoded in the given encoding.
+	"""
+	def __init__(self, f, dialect=csv.excel, encoding="utf-8", **kwds):
+		# Redirect output to a queue
+		self.queue = cStringIO.StringIO()
+		self.writer = csv.writer(self.queue, dialect=dialect, **kwds)
+		self.stream = f
+		self.encoder = codecs.getincrementalencoder(encoding)()		
+
+	def writerow(self, row):
+		try:
+			self.writer.writerow([unicode(s).encode("utf-8") for s in row])
+			# Fetch UTF-8 output from the queue ...
+			data = self.queue.getvalue()
+			data = data.decode("utf-8")
+			# ... and reencode it into the target encoding
+			data = self.encoder.encode(data)
+			# write to the target stream
+			self.stream.write(data)
+			# empty queue
+			self.queue.truncate(0)
+		except:
+			pass
+
+	def writerows(self, rows):
+		for row in rows:
+			self.writerow(row)
+
+
 
 class yellowpagesSpider(BaseSpider):
 	
 	name='yellowpages_aus'
-	start_urls = ['http://www.yellowpages.com.au/search/listings?clue=restaurants&locationClue=australia&lat=&lon=&referredBy=UNKNOWN&selectedViewMode=list&eventType=refinement&refinedCategory=42730']
+	#start_urls = ['http://www.yellowpages.com.au/search/listings?clue=restaurants&locationClue=australia&lat=&lon=&referredBy=UNKNOWN&selectedViewMode=list&eventType=refinement&refinedCategory=42730']
 
-	download_delay = 2
+	
 	
 	def __init__(self, name=None, **kwargs): 
 		self.projectName='yellowpages'
-		self.baseURL = 'http://www.yellowpages.com/'
+		self.baseURL = 'http://www.yellowpages.com.au/'
 		log=[]
-	
-		MAX_download_delay = 10
+		self.download_delay = 10;
+		self.start_urls = [kwargs["url"]];
+		
 		print 'Yellowpages Spider Started!!!'
-
+		print self.start_urls;
 		file_name = kwargs['file_name']
 		file = open(file_name, 'ab')
-		self.writer = csv.writer(file)
-		
-		self.writer.writerow(['Source_URL','Name','Phone_Number','Street','City','State','Website', 'Email'])
+		self.writer = UnicodeWriter(file)
 		
 		
-	def parse(self, response):
+		
+		
+	def parse1(self, response):
 		if str(response.status) == '403':
 			raise CloseSpider('proxy blocked')
 			sys.exit(0)
@@ -51,16 +89,14 @@ class yellowpagesSpider(BaseSpider):
 		req = Request(url=response.url, priority=2, callback=self.getList)
 		reqs.append(req);
 		page_no=1
-		page_links = hxs.select('//div[@class="button-pagination-container"]/a/@href').extract()
-		for link in page_links[:-1]:
-			url = 'https://www.yellowpages.com.au' + link
-			req = Request(url=url, priority=2, callback=self.getList)
-			reqs.append(req);
-			break;
+		page_links = hxs.select('//a[@class="button button-pagination navigation"]//@href')[0].extract()
+		req = Request(url=url, priority=2, callback=self.parse)
+		reqs.append(req);
 		return reqs
 
 		
-	def getList(self, response):
+	def parse(self, response):
+		print "Inside Parse"
 		if str(response.status) == '403':
 			raise CloseSpider('proxy blocked')
 			sys.exit(0)
@@ -69,8 +105,8 @@ class yellowpagesSpider(BaseSpider):
 		res_text = response.body_as_unicode().encode('ascii', 'ignore') 			
 		data = res_text.replace('\n', ' ').replace('\r', ' ').replace('&amp;', '&').replace('\t', '')
 		hxs = HtmlXPathSelector(response)
-		
-		list1 = hxs.select('//div[contains(@class,"listing-search")]')
+		reqs = []
+		list1 = hxs.select('//div[@class="cell in-area-cell middle-cell"]//div[contains(@class,"listing-search")]')
 		
 		for card in list1:
 			url = ''
@@ -85,8 +121,8 @@ class yellowpagesSpider(BaseSpider):
 			category2 = ''
 			
 			try:
-				url = 'https://www.yellowpages.com.au' + card.select('.//a[@class="listing-name"]/@href').extract()[0].strip()
-				print url;
+				url = 'http://www.yellowpages.com.au' + card.select('.//a[@class="listing-name"]/@href').extract()[0].strip()
+				print "URL " + url;
 			except:
 				pass
 			try:
@@ -129,9 +165,26 @@ class yellowpagesSpider(BaseSpider):
 				email = card.select('.//a[contains(@class,"contact-email")]/@data-email').extract()[0].strip()
 			except:
 				pass
-			self.writer.writerow([url, name, phone, address, suburb, "", website, email])
+			obj = [url, name, phone, address, suburb, "", website, email];
+			self.writer.writerow(obj);
 			
-		return
+		
+		page_links = hxs.select('//a[@class="button button-pagination navigation"]//text()');
+		index = 0;
+		next_page_link = None;
+		for link in page_links:
+			text = link.extract().strip();
+			if "Next" in text:
+				next_page_link = self.baseURL +	hxs.select('//a[@class="button button-pagination navigation"]//@href')[index].extract();
+				break;
+			index += 1
+		if next_page_link == None:
+			return;
+		print "Next Page URL - " + next_page_link;
+		req = Request(url=next_page_link, priority=2, callback=self.parse)
+		reqs.append(req);
+		return reqs	
+		#return
 		
 	
 	def handler(self, signum, frame):

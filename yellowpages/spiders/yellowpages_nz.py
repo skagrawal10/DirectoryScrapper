@@ -15,25 +15,60 @@ import signal
 import math
 import sys
 from middlewares import *
+import cStringIO
+import codecs
+
+
+class UnicodeWriter:
+	"""
+	A CSV writer which will write rows to CSV file "f",
+	which is encoded in the given encoding.
+	"""
+	def __init__(self, f, dialect=csv.excel, encoding="utf-8", **kwds):
+		# Redirect output to a queue
+		self.queue = cStringIO.StringIO()
+		self.writer = csv.writer(self.queue, dialect=dialect, **kwds)
+		self.stream = f
+		self.encoder = codecs.getincrementalencoder(encoding)()		
+
+	def writerow(self, row):
+		try:
+			self.writer.writerow([unicode(s).encode("utf-8") for s in row])
+			# Fetch UTF-8 output from the queue ...
+			data = self.queue.getvalue()
+			data = data.decode("utf-8")
+			# ... and reencode it into the target encoding
+			data = self.encoder.encode(data)
+			# write to the target stream
+			self.stream.write(data)
+			# empty queue
+			self.queue.truncate(0)
+		except:
+			pass
+
+	def writerows(self, rows):
+		for row in rows:
+			self.writerow(row)
+
 
 class yellowpagesSpider(BaseSpider):
 	
 	name='yellowpages_nz'
-	start_urls = ['http://yellow.co.nz/new-zealand/cafes/?what=Cafes&where=new-zealand']
+	#start_urls = ['http://yellow.co.nz/new-zealand/cafes/?what=Cafes&where=new-zealand']
 
-	download_delay = 2
+	
 	
 	def __init__(self, name=None, **kwargs): 
 		self.projectName='yellowpages'
-		self.baseURL = 'http://www.yellowpages.com/'
+		self.baseURL = 'http://www.yellow.co.nz'
 		log=[]
-	
-		MAX_download_delay = 10
+		self.start_urls = [kwargs["url"]];
+		self.download_delay = 4;
 		print 'Yellowpages Spider Started!!!'
 
 		file_name = kwargs['file_name']
 		file = open(file_name, 'ab')
-		self.writer = csv.writer(file)
+		self.writer = UnicodeWriter(file)
 		
 		
 		self.writer.writerow(['Source_URL','Name','Phone_Number','Street','City','State','Website', 'Email'])
@@ -65,12 +100,12 @@ class yellowpagesSpider(BaseSpider):
 			req = Request(url=url, priority=2, callback=self.getList)
 			reqs.append(req)
 			page_no += 1
-			if page_no>2:
-				break;
+			#if page_no>2:
+			#	break;
 		return reqs
 
 		
-	def getList(self, response):
+	def parse(self, response):
 		if str(response.status) == '403':
 			raise CloseSpider('proxy blocked')
 			sys.exit(0)
@@ -81,7 +116,7 @@ class yellowpagesSpider(BaseSpider):
 		hxs = HtmlXPathSelector(response)
 		
 		list1 = hxs.select('//div[contains(@class,"resultsListItem")]')
-		
+		reqs = [];
 		for card in list1:
 			url = ''
 			name = ''
@@ -116,12 +151,17 @@ class yellowpagesSpider(BaseSpider):
 			except:
 				pass
 			try:
-				email = card.select('.//a[@data-ga-id="Email_Link"]/@href').extract()[0].strip().split(":")[1].strip();
+				email = card.select('.//meta[@itemprop="email"]/@content').extract()[0].strip(); #.split(":")[1].strip();
+				print "Email ----->   " + email;
 			except:
 				pass
 			self.writer.writerow([url, name, phone, address, "", "", website, email])
-			
-		return
+		next_page_link = self.baseURL + hxs.select('//a[@class="nextLink"]//@href')[0].extract();
+		print "Next Page URL - " + next_page_link;
+		req = Request(url=next_page_link, priority=2, callback=self.parse)
+		reqs.append(req);
+		return reqs		
+		#return
 		
 	
 	def handler(self, signum, frame):

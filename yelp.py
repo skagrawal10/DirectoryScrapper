@@ -15,23 +15,60 @@ import signal
 import math
 import sys
 from middlewares import *
+import cStringIO
+import codecs
+
+
+class UnicodeWriter:
+	"""
+	A CSV writer which will write rows to CSV file "f",
+	which is encoded in the given encoding.
+	"""
+	def __init__(self, f, dialect=csv.excel, encoding="utf-8", **kwds):
+		# Redirect output to a queue
+		self.queue = cStringIO.StringIO()
+		self.writer = csv.writer(self.queue, dialect=dialect, **kwds)
+		self.stream = f
+		self.encoder = codecs.getincrementalencoder(encoding)()		
+
+	def writerow(self, row):
+		try:
+			self.writer.writerow([unicode(s).encode("utf-8") for s in row])
+			# Fetch UTF-8 output from the queue ...
+			data = self.queue.getvalue()
+			data = data.decode("utf-8")
+			# ... and reencode it into the target encoding
+			data = self.encoder.encode(data)
+			# write to the target stream
+			self.stream.write(data)
+			# empty queue
+			self.queue.truncate(0)
+		except:
+			pass
+
+	def writerows(self, rows):
+		for row in rows:
+			self.writerow(row)
+
 
 class yellowpagesSpider(BaseSpider):
 	
 	name='yelp'
-	start_urls = ['http://www.yelp.com/search?find_desc=Coffee+%26+Tea&find_loc=Los+Angeles']
-	download_delay = 2
+	#start_urls = ['http://www.yelp.com/search?find_desc=Coffee+%26+Tea&find_loc=Los+Angeles']
+	
 	
 	def __init__(self, name=None, **kwargs): 
 		self.projectName='yelp'
-		self.baseURL = 'http://www.yelp.com/'
+		self.baseURL = 'http://www.yelp.com'
 		log=[]
 		
-		MAX_download_delay = 10
+		
 		print 'Yelp Spider Started!!!'
 		file_name = kwargs['file_name']
+		self.download_delay = 10;
+		self.start_urls = [kwargs["url"]];
 		file = open(file_name, 'ab')
-		self.writer = csv.writer(file)
+		self.writer = UnicodeWriter(file)
 		self.writer.writerow(['Source_URL','Name','Phone_Number','Street','City','State','Website'])
 		
 		
@@ -44,11 +81,15 @@ class yellowpagesSpider(BaseSpider):
 		res_text = response.body_as_unicode().encode('ascii', 'ignore') 			
 		data = res_text.replace('\n', ' ').replace('\r', ' ').replace('&amp;', '&').replace('\t', '')
 		hxs = HtmlXPathSelector(response)
-		next_page_link = "http://www.yelp.com" + hxs.select('.//a[@class="page-option available-number"]//@href').extract()[0].strip()
-		req = Request(url=next_page_link, priority=2, callback=self.parse)
+		next_page_link = None;
 		reqs = [];
-		reqs.append(req);
-		items = hxs.select('//div[contains(@class,"search-result")]')
+		try:
+			next_page_link = "http://www.yelp.com" + hxs.select('.//a[@class="page-option prev-next next"]//@href').extract()[0].strip()
+			req = Request(url=next_page_link, priority=2, callback=self.parse)
+			reqs.append(req);
+		except:
+			pass;
+		items = hxs.select('//div[contains(@class,"search-result natural-search-result")]')
 		for item in items:
 			name = ""
 			phone_no=""
@@ -65,7 +106,8 @@ class yellowpagesSpider(BaseSpider):
 				except:
 					pass;
 				try:
-					street_addr = item.select('.//address//text()').extract()[0].strip()
+					street_addr = item.select('.//address').extract()[0].strip().replace("<address>", "").replace("</address>", "").replace("<br>", ",").replace("\n", " ").replace("\r", " ").replace("\r\n", " ").strip();
+					
 				except:
 					pass;
 				try:
@@ -79,10 +121,43 @@ class yellowpagesSpider(BaseSpider):
 				
 			except:
 				pass
-				
+			
 			info = [url,name,phone_no,street_addr,locality,website]
+			req = Request(url=url, priority=2, callback=self.getWebsite)
+			req.meta["url"] = url;
+			req.meta["name"] = name;
+			req.meta["street_addr"] = street_addr;
+			req.meta["locality"] = locality;
+			req.meta["phone_no"] = phone_no;
+			reqs.append(req);
+			
+			
+		return reqs;
+	
+	def getWebsite(self, response):
+		if str(response.status) == '403':
+			raise CloseSpider('proxy blocked')
+			sys.exit(0)
+		print 'GetList: '+response.url
+		website = "";	
+		res_text = response.body_as_unicode().encode('ascii', 'ignore') 			
+		data = res_text.replace('\n', ' ').replace('\r', ' ').replace('&amp;', '&').replace('\t', '')
+		hxs = HtmlXPathSelector(response)
+		try:
+			website = hxs.select('//div[@class="biz-website"]//a//text()')[0].extract().strip();
+		except:
+			pass
+		url = response.request.meta["url"];
+		name = response.request.meta["name"];
+		street_addr = response.request.meta["street_addr"];
+		locality = response.request.meta["locality"];
+		phone_no = response.request.meta["phone_no"];
+		info = [url,name,phone_no,street_addr + "," + locality,'', '', website]
+		try:
 			self.writer.writerow(info)
-		return reqs;	
+		except:
+			pass;
+	
 		
 
 	def handler(self, signum, frame):
